@@ -208,60 +208,7 @@ Future<void> main(List<String> args) async {
       'reply': result.history.last.text,
     };
   });
-  await test('cancel_and_resume', () async {
-    final directory = await Directory.systemTemp.createTemp('cutdex-live-');
-    try {
-      final store = FileSessionStore(directory);
-      final manager = SessionManager(
-        model: model,
-        store: store,
-        contextBuilder: ContextBuilder(maxOutputTokens: 4096),
-      );
-      final session = await manager.create(
-        system: 'Follow the latest instruction.',
-      );
-      final run = await manager.prompt(
-        session.id,
-        'Write integers 1 through 2000, one per line, no explanation.',
-      );
-      var observed = false;
-      final sub = run.events.listen((e) {
-        if (!observed && e.kind == AgentEventKind.textDelta) {
-          observed = true;
-          unawaited(run.cancel());
-        }
-      });
-      final cancelled = await run.done;
-      await sub.cancel();
-      check(
-        observed && cancelled.status == RunStatus.cancelled,
-        'Cancellation failed: ${cancelled.status} ${cancelled.error}',
-      );
-      final restored = SessionManager(
-        model: model,
-        store: FileSessionStore(directory),
-        contextBuilder: ContextBuilder(maxOutputTokens: 2048),
-      );
-      final resume = await restored.resume(session.id);
-      await resume.steer(
-        'Replace the previous request. Reply with exactly CUTDEX_RECOVERED',
-      );
-      final result = await resume.done;
-      check(
-        result.status == RunStatus.completed &&
-            result.history.last.text.trim() == 'CUTDEX_RECOVERED',
-        'Resume failed: ${result.status} ${result.error}',
-      );
-      check(result.runId == cancelled.runId, 'Logical run changed');
-      return {
-        'cancelledAfterText': observed,
-        'restoredSameRun': true,
-        'reply': result.history.last.text,
-      };
-    } finally {
-      await directory.delete(recursive: true);
-    }
-  });
+  await test('cancel_and_resume', () => validateCancelAndResume(model));
   await test('real_context_summary', () async {
     final manager = SessionManager(
       model: model,
@@ -319,4 +266,80 @@ Future<void> main(List<String> args) async {
     );
   }
   stdout.writeln('LIVE_VALIDATION_COMPLETE');
+}
+
+Future<Map<String, Object?>> validateCancelAndResume(ModelAdapter model) async {
+  final directory = await Directory.systemTemp.createTemp('cutdex-live-');
+  final runs = <AgentRun>[];
+  StreamSubscription<AgentEvent>? subscription;
+  Future<SessionSnapshot>? cancellation;
+  try {
+    final store = FileSessionStore(directory);
+    final manager = SessionManager(
+      model: model,
+      store: store,
+      contextBuilder: ContextBuilder(maxOutputTokens: 4096),
+    );
+    final session = await manager.create(
+      system: 'Follow the latest instruction.',
+    );
+    final run = await manager.prompt(
+      session.id,
+      'Write integers 1 through 2000, one per line, no explanation.',
+    );
+    runs.add(run);
+    var observed = false;
+    final sub = run.events.listen((e) {
+      if (!observed && e.kind == AgentEventKind.textDelta) {
+        observed = true;
+        cancellation = run.cancel();
+      }
+    });
+    subscription = sub;
+    final cancelled = await run.done;
+    await cancellation;
+    await sub.cancel();
+    check(
+      observed && cancelled.status == RunStatus.cancelled,
+      'Cancellation failed: ${cancelled.status} ${cancelled.error}',
+    );
+    final restored = SessionManager(
+      model: model,
+      store: FileSessionStore(directory),
+      contextBuilder: ContextBuilder(maxOutputTokens: 2048),
+    );
+    final resume = await restored.resume(session.id);
+    runs.add(resume);
+    final reconciled = await resume.done;
+    check(
+      reconciled.status == RunStatus.cancelled &&
+          reconciled.runId == cancelled.runId &&
+          reconciled.pending.isEmpty,
+      'Cancelled run reconciliation failed',
+    );
+    final followUp = await restored.prompt(
+      session.id,
+      'Replace the previous request. Reply with exactly CUTDEX_RECOVERED',
+    );
+    runs.add(followUp);
+    final result = await followUp.done;
+    check(
+      result.status == RunStatus.completed &&
+          result.history.last.text.trim() == 'CUTDEX_RECOVERED',
+      'Resume failed: ${result.status} ${result.error}',
+    );
+    check(result.runId != cancelled.runId, 'Follow-up must start a new run');
+    return {
+      'cancelledAfterText': observed,
+      'reconciledSameRun': true,
+      'followUpNewRun': true,
+      'reply': result.history.last.text,
+    };
+  } finally {
+    await subscription?.cancel();
+    for (final run in runs) {
+      if (!run.isSettled) await run.cancel();
+    }
+    await directory.delete(recursive: true);
+  }
 }

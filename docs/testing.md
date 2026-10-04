@@ -37,6 +37,7 @@ dart run example/main.dart
 | `token_usage_test.dart` | Responses 用量解析、持久化、诊断与模型输入隔离 |
 | `diagnostics_test.dart`、`connection_diagnostics_test.dart` | 诊断范围、用量和连接错误 |
 | `tool_schema_test.dart` | 模型参数 schema 与宿主参数归一化 |
+| `live_validation_test.dart` | 取消后从磁盘核对原任务，再开始新任务的验证流程 |
 
 存储测试会启动 `test/fixtures/crash_worker.dart` 和 `migration_worker.dart`，验证进程在工具执行和日志迁移中退出后的恢复行为。宿主应补充真实业务集成测试。
 
@@ -54,7 +55,7 @@ dart run tool/live_validate.dart /absolute/path/to/result.json
 
 > ⚠️ 该命令调用真实模型并消耗额度，需要单独运行。取消后的服务端执行与计费行为由供应商决定。
 
-脚本检查四项：流式对话、内存数据读写与核验、取消后从磁盘恢复、摘要后回忆用户约束。
+脚本检查四项：流式对话、内存数据读写与核验、取消后从磁盘核对原任务并开始新任务、摘要后回忆用户约束。
 
 真实业务操作、长任务质量和子任务并发应通过宿主集成测试验收。Responses 与 Anthropic 的远端连接应在目标部署中单独验证。
 
