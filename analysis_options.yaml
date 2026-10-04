@@ -1,0 +1,7 @@
+include: package:lints/recommended.yaml
+
+linter:
+  rules:
+    unnecessary_lambdas: true
+    unnecessary_parenthesis: true
+    unnecessary_statements: true
