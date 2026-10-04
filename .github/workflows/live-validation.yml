@@ -1,0 +1,36 @@
+name: Live model validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate configured model
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1
+        with:
+          sdk: '3.12.0'
+      - run: dart pub get --enforce-lockfile
+      - name: Run live validation
+        env:
+          CUTDEX_LIVE_API_KEY: ${{ secrets.CUTDEX_LIVE_API_KEY }}
+          CUTDEX_LIVE_BASE_URL: ${{ secrets.CUTDEX_LIVE_BASE_URL }}
+          CUTDEX_LIVE_MODEL: ${{ vars.CUTDEX_LIVE_MODEL }}
+        run: |
+          test -n "$CUTDEX_LIVE_API_KEY" || { echo "Configure CUTDEX_LIVE_API_KEY secret"; exit 1; }
+          test -n "$CUTDEX_LIVE_BASE_URL" || { echo "Configure CUTDEX_LIVE_BASE_URL secret"; exit 1; }
+          test -n "$CUTDEX_LIVE_MODEL" || { echo "Configure CUTDEX_LIVE_MODEL variable"; exit 1; }
+          printf '%s\n' "$CUTDEX_LIVE_API_KEY" | dart run tool/live_validate.dart

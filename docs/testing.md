@@ -61,3 +61,32 @@ dart run tool/live_validate.dart /absolute/path/to/result.json
 ## 存储维护
 
 `tool/migrate_sessions.dart` 用于磁盘会话验证及迁移。省略 `--apply` 只验证；格式及安全边界见 [存储说明](session-storage.md)。
+
+## GitHub Actions
+
+PR 指向 `main`、推送到 `main` 和推送 `v*` 标签时，自动运行格式检查、静态分析、测试和离线示例。测试覆盖 Linux 的 Dart 3.12.0 与稳定版，以及 macOS 稳定版。格式检查固定使用 3.12.0，保持输出一致。
+
+在仓库规则中，将 `CI passed` 设置为 `main` 合并前的必过检查。限制 `v*` 标签的创建权限，并保护标签免于更新或删除。
+
+### 发布 GitHub Release
+
+先更新 `pubspec.yaml` 的版本并合并到 `main`，再从对应提交创建和推送同名标签：
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+标签触发完整检查。通过后，工作流核对版本号和提交是否属于 `main`，再创建带自动说明的 GitHub Release。包含预发布后缀的版本标为 prerelease。包保留 `publish_to: none`，发布目标为 GitHub Release。
+
+### 手动验证真实模型
+
+在仓库 Settings → Secrets and variables → Actions 中配置：
+
+| 类型 | 名称 | 内容 |
+| --- | --- | --- |
+| Secret | `CUTDEX_LIVE_API_KEY` | 模型服务密钥 |
+| Secret | `CUTDEX_LIVE_BASE_URL` | API 根地址 |
+| Variable | `CUTDEX_LIVE_MODEL` | 模型 ID |
+
+在 Actions 中选择 `Live model validation`，从 `main` 手动运行。结果显示在任务日志中。该流程使用前文的四项真实模型检查，并消耗模型额度。
