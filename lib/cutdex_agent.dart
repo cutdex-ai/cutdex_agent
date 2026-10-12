@@ -5,17 +5,22 @@ export 'src/context/context.dart';
 export 'src/context/summary.dart';
 export 'src/context/model_summarizer.dart';
 export 'src/coordinator/coordinator.dart';
+export 'src/coordinator/multi_agent.dart' show MultiAgentConfig;
 export 'src/events/events.dart';
 export 'src/memory/memory.dart';
 export 'src/model/adapter.dart';
 export 'src/model/messages.dart' hide freezeJson;
 export 'src/run/agent_run.dart';
 export 'src/run/cancellation.dart';
+export 'src/run/user_input.dart' hide UserInputPending;
 export 'src/session/manager.dart';
 export 'src/session/snapshot.dart';
 export 'src/skills/skills.dart';
 export 'src/storage/store.dart';
 export 'src/tools/tool.dart';
+export 'src/tools/resource_commit_guard.dart';
+export 'src/tools/resource_task_authority.dart';
+export 'src/tools/fenced_resource_store.dart';
 
 export 'src/run/diagnostics.dart';
 

@@ -66,11 +66,15 @@ class AgentTool {
     required this.validate,
     required this.execute,
     this.recover,
+    this.alwaysAvailable = false,
   }) : parameters = freezeJson(parameters)! as Map<String, Object?> {
     if (name.isEmpty) throw ArgumentError('Tool name is empty');
   }
   final String name;
   final String description;
+
+  /// Whether context builders should keep this tool immediately discoverable.
+  final bool alwaysAvailable;
   final Map<String, Object?> parameters;
 
   /// Returns null when valid, otherwise a model-visible validation error.

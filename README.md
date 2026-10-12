@@ -11,7 +11,8 @@
 - **长任务**：按需加载工具、分页读取大结果、保存计划和自动摘要。
 - **存储**：内存存储和磁盘日志，支持并发写入保护和中断恢复。
 - **完成核验**：可注入只读检查器，核验失败后继续当前任务。
-- **扩展**：技能、按范围检索的记忆，以及受数量和轮次限制的子任务。
+- **多代理**：可选的模型协作工具，支持并行子任务、消息、追加任务、等待、中断及结果汇总。
+- **扩展**：技能、按范围检索的记忆，以及宿主显式委派的子任务。
 
 ## 快速开始
 
@@ -63,6 +64,37 @@ dart pub get
 dart run example/main.dart
 ```
 
+## 模型自主委派子代理
+
+给 `SessionManager` 配置 `multiAgent`，模型即可根据用户请求调用协作工具，无需宿主自行包装委派工具：
+
+```dart
+final manager = SessionManager(
+  model: model,
+  store: store,
+  tools: tools,
+  multiAgent: MultiAgentConfig(maxConcurrent: 3),
+);
+final session = await manager.create(system: '根据用户目标分工并核对结果。');
+final run = await manager.prompt(
+  session.id,
+  '开启两个子代理，一个分析素材，一个制定剪辑计划，最后汇总结果。',
+);
+final result = await run.done;
+```
+
+默认不启用。启用后提供 `spawn_agent`、`send_message`、`followup_task`、`wait_agent`、`list_agents` 和 `interrupt_agent`。子代理共享模型和工具，分别保存历史；创建工具立即返回 ID，结果由等待工具或完成前的运行通知交给主代理汇总。详见 [多代理协作](docs/multi-agent.md)。
+
+共享资源写工具可接入 `ResourceCommitGuard`：向管理器传入 `resourceCommitGuard`，工具开始时签发凭证，在 `guard.commit` 的同步回调内实际写入。根任务取消或切换代次后，旧子代理和孙代理的后台提交被拒绝；使用边界及示例见 [运行控制](docs/runtime.md)。
+
+跨进程和 HTTP 资源可使用 `RemoteResourceTaskAuthority` 与 `FencedResourceStore`，由资源端持久化校验代次及父子权限，并把校验、业务值与操作回执放在同一事务中。接入方式见 [资源提交保护](docs/resource-fencing.md)。
+
+需要在取消等待期间也拒绝旧提交时，两端启用 `OnlineResourceAuthorization` 与 `requireOnlineAuthorization`。取消同步关闭整棵树的准入，资源端每次提交在线核对；即使旧租约尚未到期也会拒绝，查询失败同样拒绝。取消前已批准的在途事务需等待落盘及停止确认。
+
+主代理还可通过 `request_user_input` 询问互斥目标的取舍。运行进入持久化的 `waitingUser` 状态并停止活动子任务；宿主展示 `pendingUserInput`，收到选择后调用 `answerUserInput()`，继续同一个任务。直接 `resume()` 会继续等待答案。
+
+无需密钥的示例：`dart run example/multi_agent.dart`。
+
 ## 宿主接口
 
 | 接口 | 宿主提供的内容 |
@@ -82,7 +114,7 @@ dart run example/main.dart
 - 按模型窗口设置输入与输出预算；需要精确计数时，通过 `countTokens` 注入 tokenizer。
 - 在模型与工具实现中响应取消信号，及时释放客户端资源。
 - 选择技能 ID 并提供正文；按业务需求显式写入和删除记忆。
-- 显式委派子任务，使子工具集合属于父工具集合，并在宿主中协调跨进程恢复和结果汇总。
+- 使用 `multiAgent` 启用模型自主协作；使用 `AgentCoordinator.delegate()` 显式委派时，子工具集合须属于父工具集合，并由宿主协调恢复和结果汇总。
 
 > ⚠️ 默认 token 计数为估算，应按实际模型配置预算。
 
@@ -92,6 +124,7 @@ dart run example/main.dart
 | --- | --- |
 | 连接模型、选择 HTTP 协议 | [模型适配器](docs/model-adapters.md) |
 | 追加指令、暂停、取消、恢复和核验完成 | [运行控制](docs/runtime.md) |
+| 让模型创建、协调子代理并汇总结果 | [多代理协作](docs/multi-agent.md) |
 | 调整工具发现、结果回读和上下文预算 | [长任务与上下文](docs/long-running-agent.md) |
 | 保存会话、验证日志和迁移旧格式 | [会话存储](docs/session-storage.md) |
 | 理解模块职责、恢复与完成核验 | [架构](docs/architecture.md) |
