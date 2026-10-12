@@ -192,16 +192,18 @@ Future<Map<String, Object?>> validateAdmittedWriteCancellation(
           if (worker != null) {
             return ToolResult('Already launched', isError: true);
           }
+          final workerService = service;
+          if (workerService == null) throw StateError('Service not started');
           oldPermit = authority.permitFor(ctx);
           operationId = ctx.operationId;
           oldWriterId = ctx.sessionId;
           worker = await RemoteTestSubmitter.start(
-            service!.url,
+            workerService.url,
             oldPermit!,
             operationId!,
             waitForGo: false,
           );
-          while ((await service!.control('state'))['held'] != 1) {
+          while ((await workerService.control('state'))['held'] != 1) {
             if (ctx.cancellation.isCancelled) {
               return ToolResult('Setup stopped', isError: true);
             }
@@ -229,13 +231,15 @@ Future<Map<String, Object?>> validateAdmittedWriteCancellation(
             return ToolResult('Root only', isError: true);
           }
           if (retry == null) {
+            final retryService = service;
+            if (retryService == null) throw StateError('Service not started');
             retry = await RemoteTestSubmitter.start(
-              service!.url,
+              retryService.url,
               oldPermit!,
               operationId!,
               waitForGo: true,
             );
-            await retry!.go(service!.url);
+            await retry!.go(retryService.url);
             retryResult = await retry!.result.timeout(
               const Duration(seconds: 30),
             );
@@ -312,8 +316,10 @@ Future<Map<String, Object?>> validateAdmittedWriteCancellation(
     var responseSettled = false;
     unawaited(observedSubmission.then((_) => responseSettled = true));
     Future<void> crash() async {
+      final crashedService = service;
+      if (crashedService == null) throw StateError('Service not started');
       originalResponsePendingAtCrash = !responseSettled;
-      crashExitCode = await service!.crash();
+      crashExitCode = await crashedService.crash();
       journalAfterCrash = await durableView();
       if (crashServiceAfterSave) receiptAfterCrash = await receiptView();
       record(
@@ -321,7 +327,7 @@ Future<Map<String, Object?>> validateAdmittedWriteCancellation(
             ? 'resource_service_killed_before_success_response'
             : 'resource_service_killed_without_save',
         {
-          'pid': service!.process.pid,
+          'pid': crashedService.process.pid,
           'exitCode': crashExitCode,
           'journal': journalAfterCrash,
         },

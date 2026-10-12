@@ -271,9 +271,11 @@ Future<Map<String, Object?>> validateRemoteFencedCancellation(
           beforeLate ??= (await client.inspect()).data;
           record('new_value_before_old_submit', {'resource': beforeLate});
           if (revocationFault == RemoteRevokeFault.timeoutBeforeCommit) {
-            await service!.control('release_revokes');
+            final revokeService = service;
+            if (revokeService == null) throw StateError('Service not started');
+            await revokeService.control('release_revokes');
             while (true) {
-              final state = await service!.control('state');
+              final state = await revokeService.control('state');
               final faults = (state['revokeFaults'] as List).cast<Map>();
               if (faults.length == oldWriterDepth + 1 &&
                   faults.every(
