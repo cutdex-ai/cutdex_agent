@@ -85,15 +85,19 @@ class AgentCoordinator {
         prompt,
         maxTurns: maxTurns,
       );
-      // Parent cancellation is cooperative, including the active child.
-      await Future.any<void>([
-        child.done.then((_) {}),
-        parent.cancellation.whenCancelled,
-      ]);
-      if (parent.cancellation.isCancelled && !child.isSettled) {
-        await child.cancel();
+      final unlink = parent.cancellation.linkChild(child.cancellation);
+      try {
+        await Future.any<void>([
+          child.done.then((_) {}),
+          parent.cancellation.whenCancelled,
+        ]);
+        if (parent.cancellation.isCancelled && !child.isSettled) {
+          await child.cancel();
+        }
+        return await child.done;
+      } finally {
+        unlink();
       }
-      return await child.done;
     } finally {
       _active--;
     }
