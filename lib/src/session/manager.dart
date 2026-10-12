@@ -14,6 +14,7 @@ import '../run/agent_run.dart';
 import '../storage/store.dart';
 import '../tools/tool.dart';
 import '../tools/resource_commit_guard.dart';
+import '../tools/resource_task_authority.dart';
 import 'snapshot.dart';
 
 class SessionManager {
@@ -23,6 +24,7 @@ class SessionManager {
     this.completionCheck,
     this.multiAgent,
     this.resourceCommitGuard,
+    this.resourceTaskAuthority,
     ContextBuilder? contextBuilder,
     Iterable<AgentTool> tools = const [],
     String Function()? newId,
@@ -51,6 +53,8 @@ class SessionManager {
   /// The optional write authority shared with resource submission tools.
   final ResourceCommitGuard? resourceCommitGuard;
 
+  /// The optional external authority acknowledged before work and after stopping.
+  final ResourceTaskAuthority? resourceTaskAuthority;
   late final MultiAgentRuntime _team = MultiAgentRuntime(this, multiAgent!);
   final ModelAdapter model;
   final SessionStore store;
@@ -370,6 +374,9 @@ class SessionManager {
       );
       if (resourceCommitGuard case final guard?) {
         run.bindResourceCommitGuard(guard);
+      }
+      if (resourceTaskAuthority case final authority?) {
+        run.bindResourceTaskLease(await authority.activate(snapshot));
       }
       run.start();
       return run;

@@ -11,6 +11,7 @@ import '../storage/store.dart';
 import '../tools/tool.dart';
 import '../tools/schema.dart';
 import '../tools/resource_commit_guard.dart';
+import '../tools/resource_task_authority.dart';
 import 'cancellation.dart';
 import 'completion_check.dart';
 import 'diagnostics.dart';
@@ -80,6 +81,21 @@ class AgentRun {
   final CancellationToken cancellation = CancellationToken();
 
   void Function()? _revokeResourceWrites;
+  ResourceTaskLease? _resourceTaskLease;
+  Future<void>? _remoteRevocation;
+
+  /// Binds an acknowledged resource lease before this activation starts.
+  void bindResourceTaskLease(ResourceTaskLease lease) {
+    if (_started || _resourceTaskLease != null) {
+      throw StateError(
+        'Remote resource authority already bound or run started',
+      );
+    }
+    _resourceTaskLease = lease;
+  }
+
+  Future<void> _revokeRemoteWrites() => _remoteRevocation ??=
+      _resourceTaskLease?.revoke() ?? Future<void>.value();
 
   /// Binds resource submission authority before this activation starts.
   void bindResourceCommitGuard(ResourceCommitGuard guard) {
@@ -249,6 +265,12 @@ class AgentRun {
   Future<void>? _stopCheckpoint;
 
   Future<SessionSnapshot> cancel() async {
+    if (_resourceTaskLease case ResourceTaskAdmissionLease lease) {
+      lease.stopAdmission();
+    }
+    if (_resourceTaskLease case RenewableResourceTaskLease lease) {
+      lease.stopRenewal();
+    }
     _revokeResourceWrites?.call();
     if ((_settling && !_verifying && _children.isEmpty) || isSettled) {
       return done;
@@ -258,6 +280,7 @@ class AgentRun {
     );
     cancellation.cancel();
     await checkpoint;
+    await _revokeRemoteWrites();
     return done;
   }
 
@@ -909,6 +932,14 @@ class AgentRun {
       if (_snapshot.status == RunStatus.failed || _writeFailure != null) {
         cancellation.cancel();
       }
+      if (cancellation.isCancelled &&
+          _resourceTaskLease is ResourceTaskAdmissionLease) {
+        (_resourceTaskLease as ResourceTaskAdmissionLease).stopAdmission();
+      }
+      if (cancellation.isCancelled &&
+          _resourceTaskLease is RenewableResourceTaskLease) {
+        (_resourceTaskLease as RenewableResourceTaskLease).stopRenewal();
+      }
       await _joinChildren();
       try {
         await _writes;
@@ -918,7 +949,19 @@ class AgentRun {
       }
       failure ??= _writeFailure;
       trace ??= _writeFailureTrace;
-      _revokeResourceWrites?.call();
+      if (_resourceTaskLease case ResourceTaskAdmissionLease lease) {
+        lease.stopAdmission();
+      }
+      if (_resourceTaskLease case RenewableResourceTaskLease lease) {
+        lease.stopRenewal();
+      }
+      try {
+        _revokeResourceWrites?.call();
+        await _revokeRemoteWrites();
+      } catch (error, stack) {
+        failure ??= error;
+        trace ??= stack;
+      }
       try {
         await _release();
       } catch (error, stack) {

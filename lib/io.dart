@@ -8,3 +8,5 @@ export 'src/model/openai_chat.dart';
 export 'src/model/openai_responses.dart';
 export 'src/model/anthropic_messages.dart';
 export 'src/model/protocol_history.dart';
+export 'src/tools/fenced_resource_http.dart';
+export 'src/tools/online_resource_authorization.dart';

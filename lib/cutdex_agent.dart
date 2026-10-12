@@ -19,6 +19,8 @@ export 'src/skills/skills.dart';
 export 'src/storage/store.dart';
 export 'src/tools/tool.dart';
 export 'src/tools/resource_commit_guard.dart';
+export 'src/tools/resource_task_authority.dart';
+export 'src/tools/fenced_resource_store.dart';
 
 export 'src/run/diagnostics.dart';
 
