@@ -18,6 +18,7 @@ export 'src/session/snapshot.dart';
 export 'src/skills/skills.dart';
 export 'src/storage/store.dart';
 export 'src/tools/tool.dart';
+export 'src/tools/resource_commit_guard.dart';
 
 export 'src/run/diagnostics.dart';
 

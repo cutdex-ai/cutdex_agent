@@ -10,6 +10,7 @@ import '../session/snapshot.dart';
 import '../storage/store.dart';
 import '../tools/tool.dart';
 import '../tools/schema.dart';
+import '../tools/resource_commit_guard.dart';
 import 'cancellation.dart';
 import 'completion_check.dart';
 import 'diagnostics.dart';
@@ -77,6 +78,16 @@ class AgentRun {
   final String Function(AgentRun)? collaborationInstructions;
   SessionSnapshot _snapshot;
   final CancellationToken cancellation = CancellationToken();
+
+  void Function()? _revokeResourceWrites;
+
+  /// Binds resource submission authority before this activation starts.
+  void bindResourceCommitGuard(ResourceCommitGuard guard) {
+    if (_started || _revokeResourceWrites != null) {
+      throw StateError('Resource write authority already bound or run started');
+    }
+    _revokeResourceWrites = guard.registerRun(_snapshot, cancellation);
+  }
 
   final StreamController<AgentEvent> _events = StreamController.broadcast();
   final Completer<SessionSnapshot> _done = Completer();
@@ -238,6 +249,7 @@ class AgentRun {
   Future<void>? _stopCheckpoint;
 
   Future<SessionSnapshot> cancel() async {
+    _revokeResourceWrites?.call();
     if ((_settling && !_verifying && _children.isEmpty) || isSettled) {
       return done;
     }
@@ -906,6 +918,7 @@ class AgentRun {
       }
       failure ??= _writeFailure;
       trace ??= _writeFailureTrace;
+      _revokeResourceWrites?.call();
       try {
         await _release();
       } catch (error, stack) {

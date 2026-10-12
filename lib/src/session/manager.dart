@@ -13,6 +13,7 @@ import '../model/messages.dart';
 import '../run/agent_run.dart';
 import '../storage/store.dart';
 import '../tools/tool.dart';
+import '../tools/resource_commit_guard.dart';
 import 'snapshot.dart';
 
 class SessionManager {
@@ -21,6 +22,7 @@ class SessionManager {
     required this.store,
     this.completionCheck,
     this.multiAgent,
+    this.resourceCommitGuard,
     ContextBuilder? contextBuilder,
     Iterable<AgentTool> tools = const [],
     String Function()? newId,
@@ -45,6 +47,9 @@ class SessionManager {
 
   /// The optional model-directed collaboration limits.
   final MultiAgentConfig? multiAgent;
+
+  /// The optional write authority shared with resource submission tools.
+  final ResourceCommitGuard? resourceCommitGuard;
 
   late final MultiAgentRuntime _team = MultiAgentRuntime(this, multiAgent!);
   final ModelAdapter model;
@@ -363,6 +368,9 @@ class SessionManager {
             ? null
             : _team.instructions,
       );
+      if (resourceCommitGuard case final guard?) {
+        run.bindResourceCommitGuard(guard);
+      }
       run.start();
       return run;
     } catch (_) {
