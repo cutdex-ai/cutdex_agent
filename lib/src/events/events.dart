@@ -8,6 +8,7 @@ enum AgentEventKind {
   toolProgress,
   toolFinished,
   message,
+  userInputRequested,
 }
 
 class AgentEvent {

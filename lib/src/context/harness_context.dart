@@ -177,7 +177,8 @@ class HarnessContextBuilder extends ContextBuilder {
     }
     return [
       for (final tool in tools)
-        if (_builtins.contains(tool.name) ||
+        if (tool.alwaysAvailable ||
+            _builtins.contains(tool.name) ||
             directTools.contains(tool.name) ||
             selected.contains(tool.name))
           tool,

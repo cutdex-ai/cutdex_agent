@@ -13,6 +13,7 @@ import '../tools/schema.dart';
 import 'cancellation.dart';
 import 'completion_check.dart';
 import 'diagnostics.dart';
+import 'user_input.dart';
 
 class DelegationLimit implements Exception {
   const DelegationLimit();
@@ -30,6 +31,11 @@ class AgentRun {
     this.completionCheck,
     required Iterable<AgentTool> tools,
     required this._release,
+    Iterable<AgentTool> Function(AgentRun)? collaborationTools,
+    this.prepareRun,
+    this.prepareCompletion,
+    this.beforeUserInput,
+    this.collaborationInstructions,
   }) : _snapshot = snapshot,
        _tools = {for (final tool in tools) tool.name: tool},
        _sequence = snapshot.sequence {
@@ -42,6 +48,12 @@ class AgentRun {
       }
       _tools[tool.name] = tool;
     }
+    for (final tool in collaborationTools?.call(this) ?? <AgentTool>[]) {
+      if (_tools.containsKey(tool.name)) {
+        throw ArgumentError('Reserved collaboration tool name: ${tool.name}');
+      }
+      _tools[tool.name] = tool;
+    }
   }
 
   final RunDiagnostics diagnostics = RunDiagnostics();
@@ -51,8 +63,21 @@ class AgentRun {
   final CompletionCheck? completionCheck;
   final Map<String, AgentTool> _tools;
   final Future<void> Function() _release;
+
+  /// The optional hook that restores runtime dependencies before execution.
+  final Future<void> Function(AgentRun)? prepareRun;
+
+  /// The optional hook that returns whether completion added more work.
+  final Future<bool> Function(AgentRun)? prepareCompletion;
+
+  /// The optional hook that stops owned work before awaiting a user decision.
+  final Future<void> Function(AgentRun)? beforeUserInput;
+
+  /// The optional runtime instructions included in model requests.
+  final String Function(AgentRun)? collaborationInstructions;
   SessionSnapshot _snapshot;
   final CancellationToken cancellation = CancellationToken();
+
   final StreamController<AgentEvent> _events = StreamController.broadcast();
   final Completer<SessionSnapshot> _done = Completer();
   Future<void> _writes = Future.value();
@@ -109,22 +134,94 @@ class AgentRun {
     required int turns,
     required int maxChildren,
     required int maxDelegatedTurns,
+    String? reservationKey,
+    Map<String, Object?> reservation = const {},
+    bool reuseChild = false,
   }) {
     if (_settling || isSettled || cancellation.isCancelled) {
       throw StateError('Parent is not active');
     }
     return _save((s) {
-      if (s.childSessionIds.length >= maxChildren ||
+      final reservations = Map<String, Object?>.from(
+        s.agentState['reservations'] as Map? ?? const {},
+      );
+      if (reservationKey != null && reservations.containsKey(reservationKey)) {
+        return {};
+      }
+      final exists = s.childSessionIds.contains(sessionId);
+      if ((exists && !reuseChild) ||
+          (!exists && s.childSessionIds.length >= maxChildren) ||
           turns <= 0 ||
           s.delegatedTurns + turns > maxDelegatedTurns) {
         throw const DelegationLimit();
       }
       return {
-        'childSessionIds': [...s.childSessionIds, sessionId],
+        'childSessionIds': [...s.childSessionIds, if (!exists) sessionId],
         'delegatedTurns': s.delegatedTurns + turns,
+        if (reservationKey != null)
+          'agentState': {
+            ...s.agentState,
+            'reservations': {...reservations, reservationKey: reservation},
+          },
       };
     });
   }
+
+  /// Commits collaboration metadata and an optional runtime notice atomically.
+  Future<void> checkpointAgentState(
+    Map<String, Object?> Function(Map<String, Object?>) change, {
+    String? notice,
+  }) => _save(
+    (s) => {
+      'agentState': change(s.agentState),
+      if (notice != null)
+        'history': [
+          ...s.history.map((m) => m.toJson()),
+          AgentMessage(
+            role: MessageRole.user,
+            text: notice,
+            runtimeNotice: true,
+          ).toJson(),
+        ],
+    },
+  );
+
+  Future<void> _flushAgentInbox() async {
+    if ((_snapshot.agentState['inbox'] as List? ?? const []).isEmpty) return;
+    await _save(
+      (s) => {
+        'agentState': {...s.agentState, 'inbox': <Object?>[]},
+        'history': [
+          ...s.history.map((m) => m.toJson()),
+          for (final text in s.agentState['inbox'] as List)
+            AgentMessage(
+              role: MessageRole.user,
+              text: text as String,
+              runtimeNotice: true,
+            ).toJson(),
+        ],
+      },
+    );
+  }
+
+  /// Persists a question and suspends the current tool batch without a result.
+  Future<Never> requestUserInput(UserInputRequest request) async {
+    if (_snapshot.parentSessionId != null) {
+      throw StateError('Only the primary agent may request user input');
+    }
+    await _save(
+      (s) => {
+        'pendingUserInput': request.toJson(),
+        'status': RunStatus.waitingUser.name,
+      },
+    );
+    await beforeUserInput?.call(this);
+    _emit(AgentEventKind.userInputRequested, jsonEncode(request.toJson()));
+    throw const UserInputPending();
+  }
+
+  String get _requestSystem =>
+      '${_snapshot.system}${collaborationInstructions?.call(this) ?? ''}';
 
   /// Called by SessionManager after the checkpoint and writer lease exist.
   void start() {
@@ -141,7 +238,9 @@ class AgentRun {
   Future<void>? _stopCheckpoint;
 
   Future<SessionSnapshot> cancel() async {
-    if ((_settling && !_verifying) || isSettled) return done;
+    if ((_settling && !_verifying && _children.isEmpty) || isSettled) {
+      return done;
+    }
     final checkpoint = _stopCheckpoint ??= _save(
       (s) => {'stopRequested': true, 'queued': <String>[]},
     );
@@ -293,6 +392,9 @@ class AgentRun {
         ToolRecovery recovery;
         try {
           recovery = await recover(record.call, _toolContext(record));
+        } on UserInputPending {
+          await _state(RunStatus.waitingUser);
+          return false;
         } catch (error) {
           await _state(RunStatus.waiting, 'Recovery failed: $error');
           return false;
@@ -377,6 +479,9 @@ class AgentRun {
           'tool',
           () => tool.execute(record.call, _toolContext(record)),
         );
+      } on UserInputPending {
+        await _state(RunStatus.waitingUser);
+        return false;
       } catch (error) {
         await _state(
           RunStatus.waiting,
@@ -394,6 +499,10 @@ class AgentRun {
 
   Future<void> _loop() async {
     if (_snapshot.stopRequested) cancellation.cancel();
+    if (_snapshot.pendingUserInput != null) {
+      await _state(RunStatus.waitingUser);
+      return;
+    }
     await _state(RunStatus.running);
     while (true) {
       if (_snapshot.pending.isNotEmpty && !await _executePending()) return;
@@ -407,6 +516,7 @@ class AgentRun {
       }
       // Flush already accepted steering writes before deciding to finish.
       await _writes;
+      await _flushAgentInbox();
       if (_snapshot.queued.isNotEmpty) {
         await _save(
           (s) => {
@@ -421,6 +531,7 @@ class AgentRun {
       }
       if (_snapshot.history.lastOrNull case final last?
           when last.role == MessageRole.assistant && last.calls.isEmpty) {
+        if (await prepareCompletion?.call(this) ?? false) continue;
         final reminder = contextBuilder.completionReminder(
           _snapshot.history.sublist(_snapshot.runStart),
         );
@@ -448,7 +559,8 @@ class AgentRun {
         }
         _settling = true;
         await _writes;
-        if (_snapshot.queued.isNotEmpty) {
+        if (_snapshot.queued.isNotEmpty ||
+            (_snapshot.agentState['inbox'] as List? ?? const []).isNotEmpty) {
           _settling = false;
           continue;
         }
@@ -521,7 +633,7 @@ class AgentRun {
       final request = await diagnostics.measure(
         'prepare',
         () => contextBuilder.build(
-          system: _snapshot.system,
+          system: _requestSystem,
           history: _snapshot.history,
           tools: _tools.values.toList(),
           cancellation: cancellation,
@@ -534,10 +646,17 @@ class AgentRun {
       );
       await _drainWrites();
       cancellation.throwIfCancelled();
-      if (_pause || _snapshot.queued.isNotEmpty) continue;
+      if (_pause ||
+          _snapshot.queued.isNotEmpty ||
+          (_snapshot.agentState['inbox'] as List? ?? const []).isNotEmpty) {
+        continue;
+      }
       await _save((s) => {'turns': s.turns + 1});
       await _drainWrites();
-      if (cancellation.isCancelled || _pause || _snapshot.queued.isNotEmpty) {
+      if (cancellation.isCancelled ||
+          _pause ||
+          _snapshot.queued.isNotEmpty ||
+          (_snapshot.agentState['inbox'] as List? ?? const []).isNotEmpty) {
         // No provider request was dispatched: release the reserved turn.
         await _save((s) => {'turns': s.turns - 1});
         continue;
@@ -632,7 +751,7 @@ class AgentRun {
       // Retain the full uncovered span when measuring: ordinary construction
       // may prune older turns, which would hide the need to summarize them.
       final projected = await contextBuilder.build(
-        system: _snapshot.system,
+        system: _requestSystem,
         history: history,
         tools: _tools.values.toList(),
         cancellation: cancellation,
@@ -655,7 +774,7 @@ class AgentRun {
     // can trigger compaction after every small query.
     final fixed = contextBuilder.measureInput(
       system: contextBuilder.prepareSystem(
-        _snapshot.system,
+        _requestSystem,
         history,
         taskStart: _snapshot.runStart,
       ),
@@ -707,7 +826,7 @@ class AgentRun {
     if (text.trim().isEmpty) return;
     final after = contextBuilder.measureInput(
       system:
-          '${contextBuilder.prepareSystem(_snapshot.system, history, taskStart: _snapshot.runStart)}\n$text',
+          '${contextBuilder.prepareSystem(_requestSystem, history, taskStart: _snapshot.runStart)}\n$text',
       history: contextBuilder.projectHistory(history.sublist(boundary)),
       tools: contextBuilder.selectTools(history, _tools.values.toList()),
     );
@@ -722,7 +841,7 @@ class AgentRun {
     // summary merely because a rough size estimate looked smaller.
     try {
       await contextBuilder.build(
-        system: _snapshot.system,
+        system: _requestSystem,
         history: history,
         tools: _tools.values.toList(),
         cancellation: cancellation,
@@ -749,6 +868,7 @@ class AgentRun {
     Object? failure;
     StackTrace? trace;
     try {
+      await prepareRun?.call(this);
       await _loop();
     } catch (error) {
       try {

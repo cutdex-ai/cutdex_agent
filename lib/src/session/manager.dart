@@ -5,6 +5,7 @@ import '../context/context.dart';
 import '../context/harness_context.dart';
 import '../context/model_summarizer.dart';
 import '../context/summary.dart';
+import '../coordinator/multi_agent.dart';
 import '../run/cancellation.dart';
 import '../run/completion_check.dart';
 import '../model/adapter.dart';
@@ -19,6 +20,7 @@ class SessionManager {
     required this.model,
     required this.store,
     this.completionCheck,
+    this.multiAgent,
     ContextBuilder? contextBuilder,
     Iterable<AgentTool> tools = const [],
     String Function()? newId,
@@ -35,7 +37,16 @@ class SessionManager {
     if (this.tools.map((t) => t.name).toSet().length != this.tools.length) {
       throw ArgumentError('Duplicate tool names');
     }
+    if (multiAgent != null &&
+        this.tools.any((t) => MultiAgentRuntime.toolNames.contains(t.name))) {
+      throw ArgumentError('Host tool conflicts with a collaboration tool');
+    }
   }
+
+  /// The optional model-directed collaboration limits.
+  final MultiAgentConfig? multiAgent;
+
+  late final MultiAgentRuntime _team = MultiAgentRuntime(this, multiAgent!);
   final ModelAdapter model;
   final SessionStore store;
   final CompletionCheck? completionCheck;
@@ -55,6 +66,8 @@ class SessionManager {
     String? parentSessionId,
     String? parentRunId,
     int depth = 0,
+    Iterable<AgentMessage> history = const [],
+    Map<String, Object?> agentState = const {},
   }) async {
     final sessionId = id ?? _newId();
     if (sessionId.isEmpty || depth < 0) {
@@ -68,6 +81,8 @@ class SessionManager {
       parentSessionId: parentSessionId,
       parentRunId: parentRunId,
       depth: depth,
+      history: history,
+      agentState: agentState,
     );
     await store.save(snapshot, expectedRevision: null);
     return snapshot;
@@ -127,18 +142,131 @@ class SessionManager {
     String text, {
     int maxTurns = 20,
     String? system,
-  }) => _open(sessionId, text: text, maxTurns: maxTurns, system: system);
+    String? agentInputOperationId,
+  }) => _open(
+    sessionId,
+    text: text,
+    maxTurns: maxTurns,
+    system: system,
+    agentInputOperationId: agentInputOperationId,
+  );
 
   /// Reconciles pending operations before another model call. Tool availability
   /// and semantics must remain compatible with the stored calls.
   Future<AgentRun> resume(String sessionId, {int? maxTurns}) =>
       _open(sessionId, maxTurns: maxTurns);
 
+  /// Answers the current question and resumes the same logical execution.
+  ///
+  /// Supply a listed option ID or free text. Stale or duplicate answers are
+  /// rejected before changing the checkpoint. Later calls from the question's
+  /// tool batch are discarded so the model can reconsider them with the answer.
+  Future<AgentRun> answerUserInput(
+    String sessionId, {
+    required String requestId,
+    String? optionId,
+    String? text,
+    int? maxTurns,
+  }) => _open(
+    sessionId,
+    maxTurns: maxTurns,
+    answer: {'requestId': requestId, 'optionId': optionId, 'text': text},
+  );
+
+  SessionSnapshot _answer(
+    SessionSnapshot snapshot,
+    Map<String, Object?> answer,
+  ) {
+    final question = snapshot.pendingUserInput;
+    if (question == null || question.id != answer['requestId']) {
+      throw StateError('No matching pending user question');
+    }
+    final optionId = answer['optionId'] as String?;
+    final text = answer['text'] as String?;
+    final option = question.options.where((o) => o.id == optionId).firstOrNull;
+    if ((optionId == null) == (text == null) ||
+        (optionId != null && option == null) ||
+        (text != null && text.trim().isEmpty)) {
+      throw ArgumentError('Supply one listed optionId or nonempty text');
+    }
+    final index = snapshot.pending.indexWhere(
+      (c) =>
+          c.operationId == question.id && c.call.name == 'request_user_input',
+    );
+    if (index < 0 ||
+        snapshot.pending[index].status != CallStatus.started ||
+        snapshot.pending
+            .take(index)
+            .any((c) => c.status != CallStatus.finished) ||
+        snapshot.pending
+            .skip(index + 1)
+            .any((c) => c.status != CallStatus.planned)) {
+      throw StateError('User question has an inconsistent tool checkpoint');
+    }
+    final result = ToolResult(
+      'User answered; continue with this decision',
+      data: {
+        'request_id': question.id,
+        if (option != null) 'option_id': option.id,
+        if (option != null) 'label': option.label,
+        'text': ?text,
+      },
+    );
+    final history = [...snapshot.history.map((m) => m.toJson())];
+    for (final record in snapshot.pending.skip(index)) {
+      final response = record.operationId == question.id
+          ? result
+          : ToolResult(
+              'Not executed: superseded by user input. Re-evaluate with the user decision.',
+              isError: true,
+              data: {'code': 'superseded_by_user_input', 'executed': false},
+            );
+      history.add(
+        AgentMessage(
+          role: MessageRole.tool,
+          callId: record.call.id,
+          resultId: record.operationId,
+          text: jsonEncode(response.toJson()),
+          isError: response.isError,
+        ).toJson(),
+      );
+    }
+    for (final queued in snapshot.queued) {
+      history.add(AgentMessage(role: MessageRole.user, text: queued).toJson());
+    }
+    history.add(
+      AgentMessage(
+        role: MessageRole.user,
+        text:
+            'User decision for question: ${question.question}\n'
+            '${option == null ? text : '${option.id}: ${option.label}'}\n'
+            'Continue this task according to this choice; superseded goals must not be executed.',
+      ).toJson(),
+    );
+    return snapshot.update({
+      'history': history,
+      'pending': <Object?>[],
+      'pendingUserInput': null,
+      'queued': <String>[],
+      'error': null,
+      'agentState': {
+        ...snapshot.agentState,
+        'operations': {
+          ...(snapshot.agentState['operations'] as Map? ?? const {})
+              .cast<String, Object?>(),
+          question.id: result.toJson(),
+        },
+      },
+    });
+  }
+
   Future<AgentRun> _open(
     String sessionId, {
     String? text,
     int? maxTurns,
     String? system,
+    String? agentInputOperationId,
+    Map<String, Object?>? answer,
   }) async {
     if (maxTurns != null && maxTurns <= 0) {
       throw ArgumentError('maxTurns must be positive');
@@ -150,18 +278,28 @@ class SessionManager {
     try {
       var snapshot = await store.read(sessionId);
       if (snapshot == null) throw StateError('Session not found: $sessionId');
+      if (answer != null) snapshot = _answer(snapshot, answer);
       if (text != null) {
         if (snapshot.pending.isNotEmpty ||
             snapshot.queued.isNotEmpty ||
             snapshot.status == RunStatus.paused ||
             snapshot.status == RunStatus.waiting ||
+            snapshot.pendingUserInput != null ||
             snapshot.status == RunStatus.running) {
           throw StateError('Resume the unfinished run before starting another');
         }
+        // A root's mailbox belongs to its previous run. Preserve late child
+        // reports as earlier history rather than delivering them after the new
+        // user task. Child followup turns keep their parent's queued messages.
+        final archiveRootInbox =
+            snapshot.parentSessionId == null && snapshot.runId != null;
+        final archivedInbox = archiveRootInbox
+            ? (snapshot.agentState['inbox'] as List? ?? const [])
+            : const <Object?>[];
         snapshot = snapshot.update({
           'runId': _newId(),
           'system': ?system,
-          'runStart': snapshot.history.length,
+          'runStart': snapshot.history.length + archivedInbox.length,
           'turns': 0,
           'stopRequested': false,
           'childSessionIds': <String>[],
@@ -169,8 +307,26 @@ class SessionManager {
           'maxTurns': maxTurns!,
           'error': null,
           'failure': null,
+          'agentState': {
+            if (snapshot.agentState['name'] != null)
+              'name': snapshot.agentState['name'],
+            'inbox': archiveRootInbox
+                ? <Object?>[]
+                : snapshot.agentState['inbox'] ?? <Object?>[],
+            'inputs': {
+              ...(snapshot.agentState['inputs'] as Map? ?? const {})
+                  .cast<String, Object?>(),
+              ?agentInputOperationId: true,
+            },
+          },
           'history': [
             ...snapshot.history.map((m) => m.toJson()),
+            for (final message in archivedInbox)
+              AgentMessage(
+                role: MessageRole.user,
+                text: message as String,
+                runtimeNotice: true,
+              ).toJson(),
             AgentMessage(role: MessageRole.user, text: text).toJson(),
           ],
         });
@@ -199,6 +355,13 @@ class SessionManager {
         store: store,
         tools: tools,
         release: () => store.release(sessionId, lease),
+        collaborationTools: multiAgent == null ? null : _team.toolsFor,
+        prepareRun: multiAgent == null ? null : _team.restore,
+        prepareCompletion: multiAgent == null ? null : _team.prepareCompletion,
+        beforeUserInput: multiAgent == null ? null : _team.stopForUserInput,
+        collaborationInstructions: multiAgent == null
+            ? null
+            : _team.instructions,
       );
       run.start();
       return run;

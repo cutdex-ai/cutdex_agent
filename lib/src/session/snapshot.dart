@@ -1,8 +1,17 @@
 import '../model/messages.dart';
 import '../context/summary.dart';
 import '../tools/tool.dart';
+import '../run/user_input.dart';
 
-enum RunStatus { running, waiting, paused, completed, cancelled, failed }
+enum RunStatus {
+  running,
+  waiting,
+  waitingUser,
+  paused,
+  completed,
+  cancelled,
+  failed,
+}
 
 enum RunFailure { contextBudget, authentication, connection, protocol, request }
 
@@ -74,8 +83,11 @@ class SessionSnapshot {
     Iterable<String> childSessionIds = const [],
     this.delegatedTurns = 0,
     Map<String, Object?>? completionEvidence,
+    Map<String, Object?> agentState = const {},
+    this.pendingUserInput,
   }) : completionEvidence =
            freezeJson(completionEvidence) as Map<String, Object?>?,
+       agentState = freezeJson(agentState)! as Map<String, Object?>,
        skillIds = List.unmodifiable(skillIds),
        history = List.unmodifiable(history),
        pending = List.unmodifiable(pending),
@@ -106,6 +118,12 @@ class SessionSnapshot {
   final List<String> childSessionIds;
   final int delegatedTurns;
   final Map<String, Object?>? completionEvidence;
+
+  /// The durable collaboration metadata, operation receipts and mailbox.
+  final Map<String, Object?> agentState;
+
+  /// The question awaiting an explicit host answer before execution can resume.
+  final UserInputRequest? pendingUserInput;
   Map<String, Object?> toJson() => {
     'version': 1,
     'id': id,
@@ -132,6 +150,8 @@ class SessionSnapshot {
     'childSessionIds': childSessionIds,
     'delegatedTurns': delegatedTurns,
     'completionEvidence': completionEvidence,
+    'agentState': agentState,
+    'pendingUserInput': pendingUserInput?.toJson(),
   };
   factory SessionSnapshot.fromJson(Map<String, Object?> json) {
     if (json['version'] != 1) {
@@ -171,6 +191,13 @@ class SessionSnapshot {
       delegatedTurns: json['delegatedTurns']! as int,
       completionEvidence: (json['completionEvidence'] as Map?)
           ?.cast<String, Object?>(),
+      agentState:
+          (json['agentState'] as Map?)?.cast<String, Object?>() ?? const {},
+      pendingUserInput: json['pendingUserInput'] == null
+          ? null
+          : UserInputRequest.fromJson(
+              (json['pendingUserInput'] as Map).cast<String, Object?>(),
+            ),
     );
   }
   SessionSnapshot update(Map<String, Object?> fields) =>
