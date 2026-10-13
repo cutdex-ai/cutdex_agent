@@ -13,6 +13,8 @@ class HarnessContextBuilder extends ContextBuilder {
     super.maxOutputTokens,
     super.summarizer,
     super.skills,
+    super.enableSkillDiscovery,
+    super.maxSkillCatalogTokens,
     super.memory,
     super.countTokens,
     this.maxResultBytes = 12000,
@@ -34,6 +36,7 @@ class HarnessContextBuilder extends ContextBuilder {
     SessionSnapshot Function() snapshot,
     List<AgentTool> tools,
   ) => [
+    ...super.runtimeTools(snapshot, tools),
     _tool(
       'tool_search',
       'Find tools by English keywords or exact names. Matching tool schemas '
@@ -239,7 +242,7 @@ class HarnessContextBuilder extends ContextBuilder {
 
   @override
   List<AgentMessage> projectHistory(List<AgentMessage> history) => [
-    for (final message in history)
+    for (final message in super.projectHistory(history))
       if (message.role == MessageRole.tool &&
           utf8.encode(message.text).length > maxResultBytes)
         AgentMessage(

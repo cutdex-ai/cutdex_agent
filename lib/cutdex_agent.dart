@@ -16,6 +16,7 @@ export 'src/run/user_input.dart' hide UserInputPending;
 export 'src/session/manager.dart';
 export 'src/session/snapshot.dart';
 export 'src/skills/skills.dart';
+export 'src/skills/skill_markdown.dart';
 export 'src/storage/store.dart';
 export 'src/tools/tool.dart';
 export 'src/tools/resource_commit_guard.dart';

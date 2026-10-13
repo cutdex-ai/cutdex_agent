@@ -2,6 +2,7 @@
 library;
 
 export 'src/storage/file_store.dart';
+export 'src/skills/directory_skill_provider.dart';
 
 export 'src/model/openai_chat.dart';
 
