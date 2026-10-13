@@ -22,7 +22,13 @@ class AgentSkill {
   final List<String> requiredTools;
 }
 
+/// Supplies lightweight catalog metadata and separately loaded skill bodies.
 abstract interface class SkillProvider {
+  /// Lists descriptors without loading instruction bodies into model context.
+  ///
+  /// Discovery requires unique IDs and non-empty IDs, versions and descriptions.
   Future<List<SkillDescriptor>> list(CancellationToken cancellation);
+
+  /// Loads the full instructions for [id], or returns `null` when absent.
   Future<AgentSkill?> load(String id, CancellationToken cancellation);
 }

@@ -12,6 +12,7 @@ dart test --reporter expanded
 dart analyze
 dart format --output=none --set-exit-if-changed lib test example tool
 dart run example/main.dart
+dart run example/skill_discovery.dart
 ```
 
 离线检查可直接运行。协议测试使用本机 HTTP 服务；存储测试创建临时目录与 Dart 子进程，并在结束后清理。
@@ -38,6 +39,8 @@ dart run example/main.dart
 | `remote_lease_window_test.dart` | 有限租约下撤销故障、替换代次未创建时旧子孙提交已被拒绝 |
 | `review_regression_test.dart` | 检查点等待期间的暂停/取消/追加指令竞态、日志帧头损坏 |
 | `context_boundaries_test.dart`、`extensions_test.dart` | 用户约束、消息配对、技能、记忆、事件与委派 |
+| `skills/skill_markdown_test.dart`、`skills/directory_skill_provider_test.dart` | `SKILL.md` 解析、目录发现、文件更新、错误路径、取消、符号链接与宿主会话加载 |
+| `skills/skill_discovery_test.dart` | 模型自主选择、目录预算与分页、按需加载、激活失败、磁盘恢复、摘要后正文恢复及会话隔离 |
 | `coordinator_boundaries_test.dart` | 子任务权限、预算、并发、取消、父子身份恢复 |
 | `multi_agent_test.dart` | 模型协作工具、并行运行、消息、追加任务、中断、结果汇总和故障恢复 |
 | `user_input_test.dart` | 持久化等待、重启后禁止自动续跑、答案校验、旧批次写入丢弃和活动子代理停止 |
@@ -62,6 +65,62 @@ dart run example/main.dart
 存储测试会启动 `test/fixtures/crash_worker.dart` 和 `migration_worker.dart`，验证进程在工具执行和日志迁移中退出后的恢复行为。宿主应补充真实业务集成测试。
 
 ## 显式真实模型检查
+
+### 技能发现与按需加载示例
+
+在 `.env` 或进程环境中配置 `CUTDEX_LIVE_BASE_URL`、`CUTDEX_LIVE_API_KEY`、`CUTDEX_LIVE_MODEL`，执行：
+
+```sh
+dart run example/skill_discovery.dart --live --report .dart_tool/skill-discovery/live-report.json
+```
+
+支持 `--env-file` 指定配置文件，环境变量优先。验证根据实际请求和工具日志检查目录摘要、模型选择、正文按需加载、业务操作及回读；初始摘要足够时允许模型直接调用 `load_skill`。报告不保存 API 地址或密钥，验证失败返回非零退出码。默认离线模式及配置格式见 [README](../README.md#从目录加载技能)。
+
+`test/example/skill_discovery_test.dart` 使用临时配置文件、本地 HTTP/SSE 服务和模拟模型，覆盖环境变量优先级、配置错误、凭据隐藏、正常流程及错误成功声明，不使用真实 `.env`。
+
+### 剪辑与调色的技能选择
+
+使用相同 `.env` 或环境变量配置运行：
+
+```sh
+dart run tool/live_skill_selection_validate.dart
+```
+
+两个任务使用独立会话和同一个技能目录，模型仅收到业务目标，自主选择并加载正文。报告要求剪辑只加载 `video-editing`、调色只加载 `color-grading`，并核对正文送达、业务调用顺序、回读结果和无关状态保持不变。加载错误技能或额外技能，即使业务结果正确也会失败。默认报告为 `.dart_tool/skill-discovery/selection-report.json`。
+
+`test/example/skill_discovery_test.dart` 的离线回归覆盖两项任务的正常选择、选错技能、加载额外技能及执行无关操作。
+
+### 子代理与 Skill 的真实媒体制作
+
+安装 FFmpeg、ffprobe 并填写 `.env` 后运行：
+
+```sh
+dart run tool/live_subagent_skill_validate.dart
+```
+
+主模型自行创建两个子代理，子代理各自发现并按需加载 `example/media_skills` 中的对应技能，将剪辑与调色计划提交到磁盘项目，再回读自己的字段。主代理等待完成并实际渲染 MP4。宿主不预先创建子代理、不预选 Skill ID。
+
+报告记录各代理请求、技能加载回执、共享项目提交与输出媒体指标。检查音频解码哈希、视频时长、首帧曝光及色温变化、两个子代理各自仅加载相关技能、字段修改归属，以及导出发生在子任务完成之后。合成测试源和实际导出文件保留在每次生成的独立目录，最新报告为 `.dart_tool/subagent-skills/latest-report.json`。
+
+`test/tool/subagent_skill_validation_test.dart` 使用模拟模型与实际 FFmpeg 文件处理，覆盖正常协作、额外加载无关技能和错误声称完成。没有 FFmpeg 或 ffprobe 的环境跳过这组媒体回归，其他测试仍可离线运行。
+
+### 多层子代理与 Skill 的真实媒体制作
+
+沿用同一 `.env`、媒体工具与技能目录：
+
+```sh
+dart run tool/live_subagent_skill_validate.dart --multi-level
+```
+
+宿主设置 `maxDepth: 2`、`maxConcurrent: 3`。主模型创建一位协调子代理，协调子代理再创建剪辑、调色两位孙代理。任务只指定业务目标，不提供技能 ID；孙代理从目录摘要自主选择正文，修改并回读自己的字段。协调子代理收到两位孙代理的最终报告后回读项目并返回 JSON，主代理收到协调报告后实际渲染视频并汇总导出指标。
+
+报告检查四个会话的真实父子关系、孙代理仅加载相关技能且初次请求没有正文、主代理与协调层全程不加载执行技能、字段只由对应孙代理提交，以及导出时所有子孙任务已完成。逐层交接必须在实际模型输入中出现：协调层回读前收到两位孙代理报告，根层导出前收到协调报告。两层汇总分别与合并项目和实际视频匹配；最终媒体仍核验时长、音频哈希、曝光和色温变化。
+
+默认报告 `.dart_tool/multilevel-subagent-skills/latest-report.json` 包含 `sessionTree`、`coordinators`、孙代理 `children`、逐次请求中的 `deliveredOutputs`、业务提交与媒体证据。源视频、输出 MP4、项目和会话日志保存在独立 `run-*` 目录；可以使用 `--output-root`、`--report` 指定路径。
+
+`test/tool/subagent_skill_validation_test.dart` 另外覆盖多层正常汇总，以及视频正确但协调层汇总错误、协调层加载技能并通过 `fork_turns: all` 传给孙代理、扁平委派冒充多层等反例。这些回归用模拟模型和实际 FFmpeg，真实模型验证由上述命令显式触发。
+
+### 通用真实模型检查
 
 `tool/live_validate.dart` 使用 Chat Completions 协议。网关地址和模型 ID 分别通过 `CUTDEX_LIVE_BASE_URL`、`CUTDEX_LIVE_MODEL` 配置，两者均为必填；在包根目录设置并运行：
 

@@ -389,6 +389,14 @@ class AgentRun {
 
   Future<void> _finish(int index, ToolResult result) async {
     final record = _snapshot.pending[index];
+    result = await contextBuilder.prepareToolResult(
+      call: record.call,
+      result: result,
+      snapshot: _snapshot,
+      system: _requestSystem,
+      tools: _tools.values.toList(),
+      cancellation: cancellation,
+    );
     await _save(
       (s) => {
         'pending': [
