@@ -1,6 +1,6 @@
 name: cutdex_agent
 description: Embeddable Dart agent runtime with injectable models, tools and persistence.
-version: 0.1.0
+version: 0.2.0
 publish_to: none
 
 environment:

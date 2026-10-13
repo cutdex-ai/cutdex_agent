@@ -4,6 +4,8 @@
 
 要求 Dart `^3.12.0`。使用 `package:cutdex_agent/cutdex_agent.dart` 接入平台无关的核心；使用 `package:cutdex_agent/io.dart` 接入 HTTP 模型适配器和磁盘存储。
 
+版本更新见 [CHANGELOG](CHANGELOG.md)。发布包与源码标签见 [GitHub Releases](https://github.com/cutdex-ai/cutdex_agent/releases)。
+
 ## 能力
 
 - **会话与运行**：流式事件、追加指令、暂停、取消及中断恢复。
