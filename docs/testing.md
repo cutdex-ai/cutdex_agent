@@ -375,11 +375,11 @@ PR 指向 `main`、推送到 `main` 和推送 `v*` 标签时，自动运行格�
 
 ### 发布 GitHub Release
 
-先更新 `pubspec.yaml` 的版本并合并到 `main`，再从对应提交创建和推送同名标签：
+先更新 `pubspec.yaml` 的版本和 `CHANGELOG.md`，通过 PR 合并到 `main`，再从对应提交创建和推送同名标签。例如发布 0.2.0：
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag -a v0.2.0 -m 'Release cutdex_agent v0.2.0'
+git push origin v0.2.0
 ```
 
 标签触发完整检查。通过后，工作流核对版本号和提交是否属于 `main`，再创建带自动说明的 GitHub Release。包含预发布后缀的版本标为 prerelease。包保留 `publish_to: none`，发布目标为 GitHub Release。
